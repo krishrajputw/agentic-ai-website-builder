@@ -1,138 +1,66 @@
-
 const fs = require("fs/promises");
 const path = require("path");
+const crypto = require("crypto");
+const { listWebsites } = require("../tools/fileTools");
 
 const WORKSPACE = path.resolve(__dirname, "../workspace");
-const runningPreviews = new Map();
 
-async function startPreview(websiteId) {
-  if (
-    typeof websiteId !== "string" ||
-    !/^[a-f0-9-]{36}$/i.test(websiteId)
-  ) {
+function createSignature(websiteId, expires) {
+  const secret = process.env.PREVIEW_SECRET || process.env.JWT_SECRET;
+  if (!secret) throw new Error("Set PREVIEW_SECRET or JWT_SECRET in the backend environment");
+  return crypto.createHmac("sha256", secret).update(`${websiteId}:${expires}`).digest("hex");
+}
+
+async function startPreview(websiteId, userId) {
+  if (typeof websiteId !== "string" || !/^[a-f0-9-]{36}$/i.test(websiteId)) {
     throw new Error("Invalid website ID");
   }
+  if (!userId) throw new Error("Authentication required");
 
-  const existing = runningPreviews.get(websiteId);
-  if (existing) {
-    return { success: true, url: existing.url };
+  const websites = await listWebsites(userId);
+  if (!websites.some((site) => site.id === websiteId)) {
+    throw new Error("Website not found or access denied");
   }
 
-  const root = path.join(WORKSPACE, `website-${websiteId}`);
-  const relative = path.relative(WORKSPACE, root);
-
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("Invalid website path");
-  }
-
-  const stats = await fs.stat(root).catch(() => null);
-  if (!stats?.isDirectory()) {
-    throw new Error("Website folder not found");
-  }
+  const root = path.resolve(WORKSPACE, `website-${websiteId}`);
+  const appFile = path.join(root, "src", "App.jsx");
+  const appStats = await fs.stat(appFile).catch(() => null);
+  if (!appStats?.isFile()) throw new Error("src/App.jsx not found. Generate the website first.");
 
   const srcDir = path.join(root, "src");
   await fs.mkdir(srcDir, { recursive: true });
 
-  const appFile = path.join(srcDir, "App.jsx");
-  if (!(await fs.stat(appFile).catch(() => null))) {
-    throw new Error("src/App.jsx not found. Generate the website first.");
-  }
-
-  const mainPath = path.join(srcDir, "main.jsx");
-  if (!(await fs.stat(mainPath).catch(() => null))) {
-    await fs.writeFile(
-      mainPath,
-      `import React from "react";
-import { createRoot } from "react-dom/client";
-import App from "./App.jsx";
-import "./index.css";
-
-createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);`,
-      "utf8"
-    );
-  }
-
-  const cssPath = path.join(srcDir, "index.css");
-  if (!(await fs.stat(cssPath).catch(() => null))) {
-    await fs.writeFile(
-      cssPath,
-      `* { box-sizing: border-box; }
-html, body, #root { margin: 0; min-height: 100%; }
-body { font-family: Arial, sans-serif; }
-`,
-      "utf8"
-    );
-  }
-
   const indexPath = path.join(root, "index.html");
+  const mainPath = path.join(srcDir, "main.jsx");
+  const cssPath = path.join(srcDir, "index.css");
+
   if (!(await fs.stat(indexPath).catch(() => null))) {
-    await fs.writeFile(
-      indexPath,
-      `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Website Preview</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>`,
-      "utf8"
-    );
+    await fs.writeFile(indexPath, '<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Website Preview</title></head><body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>', "utf8");
+  }
+  if (!(await fs.stat(mainPath).catch(() => null))) {
+    await fs.writeFile(mainPath, 'import React from "react";\nimport { createRoot } from "react-dom/client";\nimport App from "./App.jsx";\nimport "./index.css";\ncreateRoot(document.getElementById("root")).render(<App />);', "utf8");
+  }
+  if (!(await fs.stat(cssPath).catch(() => null))) {
+    await fs.writeFile(cssPath, '*,*::before,*::after{box-sizing:border-box}html,body,#root{margin:0;min-height:100%;}body{font-family:Arial,sans-serif}', "utf8");
   }
 
-  const { createServer } = await import("vite");
-  const reactPluginModule = await import("@vitejs/plugin-react");
-  const reactPlugin = reactPluginModule.default;
+  const expires = Math.floor(Date.now() / 1000) + 60 * 60;
+  const token = `${expires}.${createSignature(websiteId, expires)}`;
+  const base = `/api/preview/site/${websiteId}/${token}/`;
+  const { build } = require("vite");
+  const reactModule = await import("@vitejs/plugin-react");
 
-  const viteServer = await createServer({
+  await build({
     configFile: false,
     root,
-    plugins: [reactPlugin()],
-    server: {
-      host: "127.0.0.1",
-      port: 0,
-      strictPort: false,
-      open: false,
-    },
-    appType: "spa",
+    base,
+    plugins: [reactModule.default()],
+    build: { outDir: "dist", emptyOutDir: true },
   });
 
-  try {
-    await viteServer.listen();
-
-    const address = viteServer.httpServer.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Could not get preview server address");
-    }
-
-    const preview = {
-      server: viteServer,
-      url: `http://127.0.0.1:${address.port}`,
-    };
-
-    runningPreviews.set(websiteId, preview);
-    return { success: true, url: preview.url };
-  } catch (error) {
-    await viteServer.close();
-    throw error;
-  }
+  const backendUrl = process.env.PUBLIC_BACKEND_URL;
+  if (!backendUrl) throw new Error("Set PUBLIC_BACKEND_URL in Render environment variables");
+  return { success: true, url: `${backendUrl.replace(/\/+$/, "")}${base}`, expiresAt: expires };
 }
 
-async function stopPreview(websiteId) {
-  const preview = runningPreviews.get(websiteId);
-  if (!preview) return { success: true };
-
-  await preview.server.close();
-  runningPreviews.delete(websiteId);
-  return { success: true };
-}
-
-module.exports = { startPreview, stopPreview };
+module.exports = { startPreview, createSignature };
