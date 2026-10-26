@@ -2,56 +2,44 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
-const crypto = require("crypto");
-
 const router = express.Router();
-const authMiddleware = require("../middleware/authMiddleware");
-const { startPreview, createSignature } = require("../src/previewRunner");
 
 const WORKSPACE = path.resolve(__dirname, "../workspace");
+const { startPreview } = require("../src/previewRunner");
 
-router.post("/start", authMiddleware, async (req, res) => {
+router.post("/start", async (req, res) => {
   try {
     const { websiteId } = req.body || {};
-    const result = await startPreview(websiteId, req.userId);
+
+    if (!websiteId) {
+      return res.status(400).json({
+        success: false,
+        message: "websiteId is required"
+      });
+    }
+
+    const result = await startPreview(websiteId);
     res.json(result);
   } catch (error) {
     console.error("Preview start error:", error.message);
-    res.status(400).json({
+    res.status(500).json({
       success: false,
       message: error.message || "Preview failed"
     });
   }
 });
 
-router.get("/site/:websiteId/:token/*path", (req, res) => {
+router.get("/site/:websiteId/*path", (req, res) => {
   try {
-    const { websiteId, token } = req.params;
-    const [expiryText, signature] = token.split(".");
-    const expires = Number(expiryText);
+    const { websiteId } = req.params;
 
-    if (
-      !Number.isSafeInteger(expires) ||
-      expires < Math.floor(Date.now() / 1000) ||
-      !signature
-    ) {
-      return res.status(401).send("Preview expired. Start preview again.");
-    }
-
-    const expected = createSignature(websiteId, expires);
-    const actualBuffer = Buffer.from(signature, "hex");
-    const expectedBuffer = Buffer.from(expected, "hex");
-
-    if (
-      actualBuffer.length !== expectedBuffer.length ||
-      !crypto.timingSafeEqual(actualBuffer, expectedBuffer)
-    ) {
-      return res.status(403).send("Invalid preview link");
+    if (!/^[a-f0-9-]{36}$/i.test(websiteId)) {
+      return res.status(400).send("Invalid website ID");
     }
 
     const dist = path.resolve(WORKSPACE, `website-${websiteId}`, "dist");
-    const requested = req.params.path?.join("/") || "index.html";
-    const file = path.resolve(dist, requested);
+    const requestedPath = req.params.path?.join("/") || "index.html";
+    const file = path.resolve(dist, requestedPath);
 
     if (file !== dist && !file.startsWith(dist + path.sep)) {
       return res.status(403).send("Forbidden");
@@ -61,7 +49,6 @@ router.get("/site/:websiteId/:token/*path", (req, res) => {
       return res.status(404).send("Preview file not found");
     }
 
-    // Allow the deployed Vercel frontend to display this preview in an iframe.
     res.removeHeader("X-Frame-Options");
     res.setHeader(
       "Content-Security-Policy",
