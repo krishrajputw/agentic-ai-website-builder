@@ -5,7 +5,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import "./index.css";
 import App from "./App.jsx";
 import LandingPage from "./components/LandingPage.jsx";
-import Login from "./login.jsx";
+import Login from "./Login.jsx";
 import ProtectedRoute from "./ProtectedRoute.jsx";
 
 
