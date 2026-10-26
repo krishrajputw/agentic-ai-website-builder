@@ -1,0 +1,95 @@
+
+@import "tailwindcss";
+
+/* Premium charcoal + warm ivory theme */
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #e9e4dc;
+  background: #111110;
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #111110;
+}
+
+button {
+  color: #e9e4dc;
+  border: 1px solid #35332f;
+  border-radius: 7px;
+  background: #22211e;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+button:hover:not(:disabled) {
+  background: #302d28;
+  border-color: #5b5144;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Replace common blue utility classes */
+.bg-blue-600,
+.bg-blue-500 {
+  background-color: #c17b49 !important;
+}
+
+.hover\:bg-blue-500:hover {
+  background-color: #d18a56 !important;
+}
+
+.focus\:border-blue-500:focus {
+  border-color: #c17b49 !important;
+}
+
+.text-blue-500,
+.text-blue-400 {
+  color: #d69a6d !important;
+}
+
+.border-blue-500 {
+  border-color: #c17b49 !important;
+}
+
+/* Workspace surfaces */
+.workspace-panel {
+  border: 1px solid #34312c;
+  border-radius: 10px;
+  background: #191816;
+}
+
+.workspace-heading {
+  background: #201e1b;
+  border-bottom: 1px solid #34312c;
+  color: #c8bfb2;
+}
+
+.workspace-muted {
+  color: #8d877e;
+}
+
+textarea,
+input {
+  color: #e9e4dc;
+  background: #191816;
+  border-color: #39352f;
+}
+
+textarea:focus,
+input:focus {
+  outline: none;
+  border-color: #a66e45;
+}
+
+::selection {
+  color: #fff5eb;
+  background: #785136;
+}
