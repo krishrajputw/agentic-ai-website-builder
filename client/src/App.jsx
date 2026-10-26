@@ -3,8 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import Editor from "@monaco-editor/react";
 import JSZip from "jszip";
 
-const API = "http://localhost:5000/api/agent";
-const PREVIEW_API = "http://localhost:5000/api/preview";
+const API = `${import.meta.env.VITE_API_BASE_URL}/api/agent`;
+const PREVIEW_API = `${import.meta.env.VITE_API_BASE_URL}/api/preview`;
 
 async function fetchWithAuth(url, options = {}) {
   const token = localStorage.getItem("token");
@@ -138,7 +138,7 @@ const handleLogout = async () => {
 
     if (token) {
       const response = await fetch(
-        "http://localhost:5000/api/auth/logout",
+        `${import.meta.env.VITE_API_BASE_URL}/api/auth/logout`,
         {
           method: "POST",
           headers: {

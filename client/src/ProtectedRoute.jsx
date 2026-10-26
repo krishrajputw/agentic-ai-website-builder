@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet } from "react-router-dom";
 
-const API = "http://localhost:5000/api/auth";
+const API = `${import.meta.env.VITE_API_BASE_URL}/api/auth`;
 
 export default function ProtectedRoute() {
   const [status, setStatus] = useState("checking");
