@@ -52,11 +52,13 @@ async function startPreview(websiteId) {
   }
 
   const { build } = await import("vite");
+  const reactPlugin = (await import("@vitejs/plugin-react")).default;
 
   await build({
     configFile: false,
     root,
     base: `/api/preview/site/${websiteId}/`,
+    plugins: [reactPlugin()],
     esbuild: { jsx: "automatic" },
     build: {
       outDir: "dist",
