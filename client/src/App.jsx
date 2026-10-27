@@ -90,8 +90,9 @@ export default function App() {
 
       const response = await fetchWithAuth(`${API}/websites`);
       const data = await response.json();
-      console.log("PREVIEW API RESPONSE:", data);
-      console.log("PREVIEW URL:", data.url);
+      console.log("START PREVIEW STATUS:", response.status);
+      console.log("START PREVIEW RESPONSE:", data);
+      console.log("START PREVIEW URL:", data.url);
 
       if (!response.ok || !data.success) {
         throw new Error(data.message || "Could not load websites");
@@ -528,6 +529,9 @@ const generateWebsite = async (submittedPrompt = prompt) => {
       });
 
       const data = await response.json();
+      console.log("START PREVIEW STATUS:", response.status);
+      console.log("START PREVIEW RESPONSE:", data);
+      console.log("START PREVIEW URL:", data.url);
 
       if (!response.ok || !data.success) {
         throw new Error(data.message || "Could not start preview");
