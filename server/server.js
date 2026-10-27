@@ -8,7 +8,7 @@ require("dotenv").config();
 const healthRoutes = require("./routes/healthRoutes");
 const aiRoutes = require("./routes/aiRoutes");
 const agentRoutes = require("./routes/agentRoutes");
-const previewRoutes = require("./routes/previewRoutes");
+//const previewRoutes = require("./routes/previewRoutes");
 const authRoutes = require("./routes/authRoutes");
 
 const app = express();
@@ -46,7 +46,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use("/api/health", healthRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/agent", agentRoutes);
-app.use("/api/preview", previewRoutes);
+//app.use("/api/preview", previewRoutes);
 app.use("/api/auth", authRoutes);
 
 // Handle CORS errors without exposing internal details.

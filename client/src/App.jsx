@@ -1,10 +1,19 @@
-
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Editor from "@monaco-editor/react";
 import JSZip from "jszip";
+import {
+  SandpackProvider,
+  SandpackLayout,
+  SandpackPreview,
+} from "@codesandbox/sandpack-react";
 
 const API = `${import.meta.env.VITE_API_BASE_URL}/api/agent`;
-const PREVIEW_API = `${import.meta.env.VITE_API_BASE_URL}/api/preview`;
 
 async function fetchWithAuth(url, options = {}) {
   const token = localStorage.getItem("token");
@@ -65,15 +74,11 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState("");
   const [fileContent, setFileContent] = useState("");
 
-  const [previewUrl, setPreviewUrl] = useState("");
-  const [previewVersion, setPreviewVersion] = useState(0);
-
   const [generating, setGenerating] = useState(false);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [saving, setSaving] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [creatingWebsite, setCreatingWebsite] = useState(false);
-  const [startingPreview, setStartingPreview] = useState(false);
 
   const [activeTab, setActiveTab] = useState("preview");
   const [message, setMessage] = useState("");
@@ -82,7 +87,78 @@ export default function App() {
   const [chatError, setChatError] = useState("");
   const [chatHistory, setChatHistory] = useState({});
 
+  // Keep the latest chat message visible.
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
+  }, [chatMessages, generating, chatError]);
+
   const selectedWebsite = websites.find((site) => site.id === websiteId);
+
+  // Convert generated files into paths Sandpack can resolve.
+  const sandpackFiles = useMemo(() => {
+    const result = {};
+
+    Object.entries(fileContents).forEach(([originalPath, content]) => {
+      if (typeof content !== "string") return;
+
+      const normalizedPath = normalizePath(originalPath);
+      if (!normalizedPath) return;
+
+      result[`/${normalizedPath}`] = { code: content };
+
+      if (normalizedPath.startsWith("src/")) {
+        const rootPath = normalizedPath.slice(4);
+        result[`/${rootPath}`] = { code: content };
+      }
+    });
+
+    const appPath = [
+      "src/App.jsx",
+      "src/App.js",
+      "src/App.tsx",
+      "src/App.ts",
+      "App.jsx",
+      "App.js",
+    ].find((path) => typeof fileContents[path] === "string");
+
+    if (appPath) {
+      result["/App.js"] = { code: fileContents[appPath] };
+    }
+
+    result["/index.js"] = {
+      code: `
+import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
+import "./index.css";
+
+const root = createRoot(document.getElementById("root"));
+root.render(<App />);
+`,
+    };
+
+    const globalCss =
+      fileContents["src/index.css"] ??
+      fileContents["src/App.css"] ??
+      fileContents["index.css"] ??
+      "";
+
+    result["/index.css"] = {
+      code:
+        typeof globalCss === "string"
+          ? globalCss
+          : "body { margin: 0; font-family: Arial, sans-serif; }",
+    };
+
+    return result;
+  }, [fileContents]);
+
+  const hasPreview = Boolean(sandpackFiles["/App.js"]);
 
   const loadWebsites = useCallback(async () => {
     try {
@@ -90,9 +166,6 @@ export default function App() {
 
       const response = await fetchWithAuth(`${API}/websites`);
       const data = await response.json();
-      console.log("START PREVIEW STATUS:", response.status);
-      console.log("START PREVIEW RESPONSE:", data);
-      console.log("START PREVIEW URL:", data.url);
 
       if (!response.ok || !data.success) {
         throw new Error(data.message || "Could not load websites");
@@ -128,50 +201,11 @@ export default function App() {
     }
   }, []);
 
-
-const handleLogout = async () => {
-  const confirmed = window.confirm(
-    "Are you sure you want to logout? All your generated websites will be deleted permanently."
-  );
-
-  if (!confirmed) return;
-
-  try {
-    const token = localStorage.getItem("token");
-
-    if (token) {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_BASE_URL}/api/auth/logout`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Logout failed. Please try again.");
-      }
-    }
-  } catch (error) {
-    alert(error.message || "Could not logout.");
-    return;
-  }
-
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
-  window.location.href = "/login";
-};
-
-
-
   const loadFiles = useCallback(
     async (preferredPath = "") => {
       if (!websiteId) return;
 
       const requestedId = websiteId;
-
       setLoadingFiles(true);
       setError("");
 
@@ -206,18 +240,17 @@ const handleLogout = async () => {
               const fileData = await result.json();
 
               if (!result.ok || fileData.success === false) {
-                if (result.status === 401) {
-                  throw new Error(
-                    fileData.message || "Please log in again."
-                  );
-                }
-
-                return [path, ""];
+                throw new Error(
+                  fileData.message || `Could not read ${path}`
+                );
               }
 
               return [path, getFileContent(fileData)];
             } catch (err) {
-              if (err.message?.toLowerCase().includes("log in again")) {
+              if (
+                err.message?.toLowerCase().includes("log in again") ||
+                err.message?.toLowerCase().includes("unauthorized")
+              ) {
                 throw err;
               }
 
@@ -276,8 +309,6 @@ const handleLogout = async () => {
     setFileContents({});
     setSelectedFile("");
     setFileContent("");
-    setPreviewUrl("");
-    setPreviewVersion(0);
     setMessage("");
     setError("");
     setChatError("");
@@ -311,14 +342,53 @@ const handleLogout = async () => {
       setWebsites((previous) => [...previous, data.website]);
       setNewWebsiteName("");
       setPrompt("");
-      setMessage(`Created "${data.website.name}".`);
       setWebsiteId(data.website.id);
+      setMessage(`Created "${data.website.name}".`);
     } catch (err) {
       setError(err.message || "Could not create website");
     } finally {
       setCreatingWebsite(false);
     }
   };
+
+  
+const handleLogout = async () => {
+  const confirmed = window.confirm(
+    "Are you sure you want to logout? All your generated websites will be deleted permanently."
+  );
+
+  if (!confirmed) return;
+
+  try {
+    const token = localStorage.getItem("token");
+
+    if (token) {
+      const response = await fetch(
+        `${import.meta.env.VITE_API_BASE_URL}/api/auth/logout`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Logout failed. Please try again.");
+      }
+    }
+  } catch (err) {
+    alert(err.message || "Could not logout.");
+    return;
+  }
+
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+
+  // Replace the current history entry instead of adding /login.
+  window.location.replace("/login");
+};
+
 
   const openFile = useCallback(
     async (path) => {
@@ -363,117 +433,117 @@ const handleLogout = async () => {
     [fileContents, websiteId]
   );
 
-  
-const generateWebsite = async (submittedPrompt = prompt) => {
-  const request = submittedPrompt.trim();
+  const generateWebsite = async (submittedPrompt = prompt) => {
+    const request = submittedPrompt.trim();
 
-  if (!request || generating || !websiteId) return;
+    if (!request || generating || !websiteId) return;
 
-  const targetWebsiteId = websiteId;
+    const targetWebsiteId = websiteId;
 
-  const userMessage = {
-    id: `${Date.now()}-user`,
-    role: "user",
-    content: request,
-  };
-
-  const previousMessages =
-    chatHistory[targetWebsiteId] || chatMessages;
-
-  const updatedMessages = [...previousMessages, userMessage];
-
-  setChatMessages(updatedMessages);
-  setChatHistory((previous) => ({
-    ...previous,
-    [targetWebsiteId]: updatedMessages,
-  }));
-
-  setPrompt("");
-  setGenerating(true);
-  setActiveTab("preview");
-  setError("");
-  setChatError("");
-  setMessage("");
-
-  try {
-    const response = await fetchWithAuth(`${API}/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt: request,
-        websiteId: targetWebsiteId,
-      }),
-    });
-
-    let data;
-
-    try {
-      data = await response.json();
-    } catch {
-      throw new Error("Server returned an invalid response. Please try again.");
-    }
-
-    if (!response.ok || data.success === false) {
-      if (response.status === 401) {
-        throw new Error("Session expired. Please log in again.");
-      }
-
-      if (response.status === 429) {
-        throw new Error(
-          data.message || "AI usage limit reached. Please try again later."
-        );
-      }
-
-      if (response.status === 503 || response.status === 502) {
-        throw new Error(
-          data.message || "AI service is temporarily unavailable. Try again shortly."
-        );
-      }
-
-      if (response.status === 400) {
-        throw new Error(data.message || "Please check your prompt and try again.");
-      }
-
-      if (response.status >= 500) {
-        throw new Error("Server error. Please try again later.");
-      }
-
-      throw new Error(data.message || "Website generation failed.");
-    }
-
-    const assistantMessage = {
-      id: `${Date.now()}-assistant`,
-      role: "assistant",
-      content:
-        data.message ||
-        "Website updated successfully. Check your preview.",
+    const userMessage = {
+      id: `${Date.now()}-user`,
+      role: "user",
+      content: request,
     };
 
-    setChatMessages((previous) => {
-      const next = [...previous, assistantMessage];
+    const previousMessages = chatHistory[targetWebsiteId] || chatMessages;
+    const updatedMessages = [...previousMessages, userMessage];
 
-      setChatHistory((history) => ({
-        ...history,
-        [targetWebsiteId]: next,
-      }));
+    setChatMessages(updatedMessages);
+    setChatHistory((previous) => ({
+      ...previous,
+      [targetWebsiteId]: updatedMessages,
+    }));
 
-      return next;
-    });
-
-    await loadFiles();
-
-    setPreviewVersion((version) => version + 1);
+    setPrompt("");
+    setGenerating(true);
     setActiveTab("preview");
-    setMessage("Website updated successfully.");
-  } catch (err) {
-    setChatError(
-      err.message || "Website generation failed. Please try again."
-    );
-  } finally {
-    setGenerating(false);
-  }
-};
+    setError("");
+    setChatError("");
+    setMessage("");
 
+    try {
+      const response = await fetchWithAuth(`${API}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: request,
+          websiteId: targetWebsiteId,
+        }),
+      });
+
+      let data;
+
+      try {
+        data = await response.json();
+      } catch {
+        throw new Error(
+          "Server returned an invalid response. Please try again."
+        );
+      }
+
+      if (!response.ok || data.success === false) {
+        if (response.status === 401) {
+          throw new Error("Session expired. Please log in again.");
+        }
+
+        if (response.status === 429) {
+          throw new Error(
+            data.message || "AI usage limit reached. Please try again later."
+          );
+        }
+
+        if (response.status === 503 || response.status === 502) {
+          throw new Error(
+            data.message ||
+              "AI service is temporarily unavailable. Try again shortly."
+          );
+        }
+
+        if (response.status === 400) {
+          throw new Error(
+            data.message || "Please check your prompt and try again."
+          );
+        }
+
+        if (response.status >= 500) {
+          throw new Error("Server error. Please try again later.");
+        }
+
+        throw new Error(data.message || "Website generation failed.");
+      }
+
+      const assistantMessage = {
+        id: `${Date.now()}-assistant`,
+        role: "assistant",
+        content:
+          data.message || "Website updated successfully. Check your preview.",
+      };
+
+      setChatMessages((previous) => {
+        const next = [...previous, assistantMessage];
+
+        setChatHistory((history) => ({
+          ...history,
+          [targetWebsiteId]: next,
+        }));
+
+        return next;
+      });
+
+      // Load generated files; Sandpack updates from fileContents.
+      await loadFiles();
+
+      setActiveTab("preview");
+      setMessage("Website generated. Preview updated.");
+    } catch (err) {
+      setChatError(
+        err.message || "Website generation failed. Please try again."
+      );
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const saveFile = async () => {
     if (!selectedFile || !websiteId || saving) return;
@@ -504,55 +574,11 @@ const generateWebsite = async (submittedPrompt = prompt) => {
         [selectedFile]: fileContent,
       }));
 
-      setMessage(
-        `Saved ${selectedFile}. Restart or refresh preview if needed.`
-      );
+      setMessage(`Saved ${selectedFile}. Preview will update automatically.`);
     } catch (err) {
       setError(err.message || "Could not save file");
     } finally {
       setSaving(false);
-    }
-  };
-
-  const startPreview = async () => {
-    if (!websiteId || startingPreview) return;
-
-    setStartingPreview(true);
-    setError("");
-    setMessage("Starting local preview...");
-
-    try {
-      const response = await fetchWithAuth(`${PREVIEW_API}/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ websiteId }),
-      });
-
-      const data = await response.json();
-      console.log("START PREVIEW STATUS:", response.status);
-      console.log("START PREVIEW RESPONSE:", data);
-      console.log("START PREVIEW URL:", data.url);
-
-      if (!response.ok || !data.success) {
-        throw new Error(data.message || "Could not start preview");
-      }
-
-      if (!data.url || typeof data.url !== "string") {
-        throw new Error(
-          "Preview API did not return a URL. Check the backend preview route."
-        );
-      }
-
-      console.log("URL BEFORE SET:", data.url);
-
-      setPreviewUrl(data.url);
-      setPreviewVersion((version) => version + 1);
-      setMessage("Preview started.");
-    } catch (err) {
-      setError(err.message || "Could not start preview");
-      setMessage("");
-    } finally {
-      setStartingPreview(false);
     }
   };
 
@@ -600,12 +626,10 @@ const generateWebsite = async (submittedPrompt = prompt) => {
     if (!websiteId || generating) return;
 
     setChatMessages([]);
-
     setChatHistory((previous) => ({
       ...previous,
       [websiteId]: [],
     }));
-
     setChatError("");
   };
 
@@ -658,15 +682,12 @@ const generateWebsite = async (submittedPrompt = prompt) => {
             {files.length} source files
           </span>
 
-          
           <button
-  onClick={handleLogout}
-  className="rounded-lg border border-red-900 px-3 py-2 text-sm text-red-400"
->
-  Logout
-</button>
-
-
+            onClick={handleLogout}
+            className="rounded-lg border border-red-900 px-3 py-2 text-sm text-red-400"
+          >
+            Logout
+          </button>
 
           <button
             onClick={downloadProject}
@@ -678,9 +699,15 @@ const generateWebsite = async (submittedPrompt = prompt) => {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-[1800px] grid-cols-1 gap-4 p-4 lg:grid-cols-[350px_minmax(0,1fr)] lg:p-5">
+      <main
+        className={`mx-auto grid max-w-[1800px] grid-cols-1 gap-4 p-4 lg:p-5 ${
+          activeTab === "preview"
+            ? "lg:grid-cols-[350px_minmax(0,1fr)]"
+            : "lg:grid-cols-[350px_minmax(0,1fr)]"
+        }`}
+      >
         <aside className="flex min-w-0 flex-col gap-4">
-          <section className="flex min-h-[480px] flex-col overflow-hidden rounded-xl border border-[#302d28] bg-[#191816]">
+          <section className="flex h-[min(720px,80vh)] min-h-[420px] flex-col overflow-hidden rounded-xl border border-[#302d28] bg-[#191816]">
             <div className="flex items-center justify-between border-b border-[#302d28] px-4 py-3">
               <div>
                 <h2 className="text-sm font-semibold">AI Assistant</h2>
@@ -698,7 +725,7 @@ const generateWebsite = async (submittedPrompt = prompt) => {
               </button>
             </div>
 
-            <div className="flex-1 space-y-4 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-3">
               {chatMessages.length === 0 ? (
                 <div className="py-5">
                   <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#38291f] text-lg text-[#e6ad80]">
@@ -746,7 +773,6 @@ const generateWebsite = async (submittedPrompt = prompt) => {
                       <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[#c18b62]">
                         {item.role === "user" ? "You" : "Workshop AI"}
                       </p>
-
                       <p className="whitespace-pre-wrap break-words">
                         {item.content}
                       </p>
@@ -775,10 +801,12 @@ const generateWebsite = async (submittedPrompt = prompt) => {
                   </button>
                 </div>
               )}
+
+              <div ref={chatEndRef} />
             </div>
 
             <form
-              className="border-t border-[#302d28] p-3"
+              className="shrink-0 border-t border-[#302d28] p-3"
               onSubmit={(event) => {
                 event.preventDefault();
                 generateWebsite();
@@ -812,7 +840,6 @@ const generateWebsite = async (submittedPrompt = prompt) => {
                 <span className="text-[10px] text-[#777168]">
                   Enter to send · Shift+Enter for new line
                 </span>
-
                 <button
                   type="submit"
                   disabled={!prompt.trim() || generating || !websiteId}
@@ -828,9 +855,7 @@ const generateWebsite = async (submittedPrompt = prompt) => {
             <div className="flex items-center justify-between border-b border-[#302d28] px-4 py-3">
               <div>
                 <h2 className="text-sm font-semibold">Project files</h2>
-                <p className="mt-1 text-xs text-[#827b71]">
-                  {files.length} files
-                </p>
+                <p className="mt-1 text-xs text-[#827b71]">{files.length} files</p>
               </div>
 
               <button
@@ -844,9 +869,7 @@ const generateWebsite = async (submittedPrompt = prompt) => {
 
             <div className="max-h-[360px] overflow-auto p-2">
               {loadingFiles && files.length === 0 ? (
-                <p className="p-3 text-xs text-[#8d877e]">
-                  Loading files...
-                </p>
+                <p className="p-3 text-xs text-[#8d877e]">Loading files...</p>
               ) : files.length === 0 ? (
                 <p className="p-3 text-xs leading-5 text-[#8d877e]">
                   No source files yet. Ask the AI to generate a website.
@@ -869,12 +892,11 @@ const generateWebsite = async (submittedPrompt = prompt) => {
                       {path.endsWith(".css")
                         ? "◈"
                         : path.endsWith(".json")
-                          ? "{}"
-                          : path.endsWith(".html")
-                            ? "◇"
-                            : "⌘"}
+                        ? "{}"
+                        : path.endsWith(".html")
+                        ? "◇"
+                        : "⌘"}
                     </span>
-
                     <span className="break-all">{path}</span>
                   </button>
                 ))
@@ -965,74 +987,38 @@ const generateWebsite = async (submittedPrompt = prompt) => {
               )}
             </div>
           ) : (
-            <div className="relative h-[580px] overflow-hidden bg-[#100f0e]">
-              {previewUrl && (
-                <iframe
-                  key={`${previewUrl}-${previewVersion}`}
-                  title="Generated website preview"
-                  src={previewUrl}
-                  className="h-full w-full border-0 bg-white"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                />
+            <div className="flex h-[calc(100vh-180px)] min-h-[500px] flex-col overflow-hidden bg-white">
+              {generating && (
+                <div className="border-b bg-amber-50 px-4 py-2 text-sm text-amber-900">
+                  Updating your website preview...
+                </div>
               )}
 
-              {(!previewUrl || generating || startingPreview) && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center overflow-hidden bg-[#100f0e] px-6 text-center">
-                  <div className="pointer-events-none absolute h-64 w-64 animate-ping rounded-full border border-[#c17b49]/20 [animation-duration:3s]" />
-
-                  <div className="pointer-events-none absolute h-44 w-44 animate-pulse rounded-full border border-[#c17b49]/30" />
-
-                  <div className="relative mb-7 flex h-16 w-16 items-center justify-center rounded-2xl border border-[#76563d] bg-[#241b15] text-3xl text-[#e6ad80] shadow-[0_0_45px_rgba(193,123,73,0.15)]">
-                    <span className="animate-pulse">✦</span>
-                  </div>
-
-                  <p className="mb-2 text-[10px] uppercase tracking-[0.35em] text-[#c17b49]">
-                    Workshop AI
-                  </p>
-
-                  <h3 className="mb-3 text-xl font-semibold text-[#eee5da]">
+              {hasPreview ? (
+                <div className="flex-1 w-full h-full min-h-0 overflow-hidden [&_.sp-wrapper]:!h-full [&_.sp-layout]:!h-full [&_.sp-layout]:!border-none [&_.sp-layout]:!rounded-none [&_.sp-preview]:!h-full [&_.sp-preview-container]:!h-full [&_iframe]:!h-full">
+                  <SandpackProvider template="react" files={sandpackFiles}>
+                    <SandpackLayout style={{ height: "100%" }}>
+                      <SandpackPreview
+                        showNavigator={false}
+                        showOpenInCodeSandbox={false}
+                        style={{ height: "100%" }}
+                      />
+                    </SandpackLayout>
+                  </SandpackProvider>
+                </div>
+              ) : (
+                <div className="flex h-full flex-1 flex-col items-center justify-center gap-3 bg-[#100f0e] px-6 text-center text-[#e9e4dc]">
+                  <div className="text-3xl text-[#e6ad80]">✦</div>
+                  <h3 className="text-lg font-semibold">
                     {generating
-                      ? "Crafting your website"
-                      : startingPreview
-                        ? "Preparing your preview"
-                        : files.length
-                          ? "Your website is ready"
-                          : "Your canvas awaits"}
+                      ? "Generating website..."
+                      : "Your preview will appear here"}
                   </h3>
-
-                  <p className="mb-7 max-w-sm text-sm leading-6 text-[#958b7f]">
+                  <p className="max-w-sm text-sm text-[#958b7f]">
                     {generating
-                      ? "Writing components, styling layouts and bringing your idea to life..."
-                      : startingPreview
-                        ? "Starting your development environment..."
-                        : files.length
-                          ? "Launch the preview to see your website in action."
-                          : "Describe your idea to start building something amazing."}
+                      ? "Please wait while the AI generates your files."
+                      : "Generate a React website to see its live preview."}
                   </p>
-
-                  {(generating || startingPreview) && (
-                    <div className="mb-7 flex items-center gap-2">
-                      {[0, 1, 2, 3, 4].map((item) => (
-                        <span
-                          key={item}
-                          className="h-1.5 w-5 rounded-full bg-[#c17b49] animate-pulse"
-                          style={{ animationDelay: `${item * 150}ms` }}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {!generating && !startingPreview && (
-                    <button
-                      onClick={startPreview}
-                      disabled={!websiteId || !files.length}
-                      className="rounded-lg bg-[#c17b49] px-5 py-3 text-sm font-semibold text-[#17130f] transition hover:bg-[#d49361] disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {files.length
-                        ? "Launch preview →"
-                        : "Generate a website first"}
-                    </button>
-                  )}
                 </div>
               )}
             </div>
