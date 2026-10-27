@@ -29,7 +29,7 @@ router.post("/start", async (req, res) => {
   }
 });
 
-router.get("/site/:websiteId/*path", (req, res) => {
+router.get("/site/:websiteId/{*path}", (req, res) => {
   try {
     const { websiteId } = req.params;
 
