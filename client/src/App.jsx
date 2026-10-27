@@ -543,6 +543,8 @@ const generateWebsite = async (submittedPrompt = prompt) => {
         );
       }
 
+      console.log("URL BEFORE SET:", data.url);
+
       setPreviewUrl(data.url);
       setPreviewVersion((version) => version + 1);
       setMessage("Preview started.");
